@@ -15,12 +15,43 @@ nested folders, as a single commit.
    uploaded path.
 3. **Add files.** Drag and drop files or folders, or use the file and folder
    pickers. Nested folder structure is preserved.
-4. **Upload.** Each file becomes a git blob, uploaded in parallel with retries.
+4. **Answer the folder question.** Each selected folder gets its own choice:
+   recreate it in the repository, or upload only its contents.
+5. **Upload.** Each file becomes a git blob, uploaded in parallel with retries.
    When every blob exists, the app writes one tree, one commit, and moves the
    branch reference. Hundreds of files produce exactly one commit.
 
 The app talks to GitHub only from server-side route handlers, so the access
 token stays on the server.
+
+## Folder handling
+
+When you select or drop a folder, the app asks what to do with it before it will
+let you upload. Say you pick a folder named `photos` holding `a.jpg` and
+`raw/b.jpg`, with no destination folder set:
+
+| Choice | Resulting paths |
+| --- | --- |
+| Create the folder in the repo | `photos/a.jpg`, `photos/raw/b.jpg` |
+| Use the contents only | `a.jpg`, `raw/b.jpg` |
+
+Rules that apply:
+
+- Every top-level folder is asked about on its own, so you can keep one and
+  flatten another in the same batch. Buttons apply one answer to all of them
+  when there are several.
+- Only the selected folder's own name is affected. Sub-folders always keep their
+  structure, so nothing inside a folder is ever flattened together.
+- Answers can be changed at any time before uploading. The staged list previews
+  the exact paths that will be written.
+- A destination folder, if set, is prefixed after the choice is applied. Pick
+  "use the contents only" plus a destination of `assets` to move a folder's
+  contents into `assets/`.
+- Using the contents of two folders that hold the same filename would write two
+  files to one path. The app flags the later ones as duplicates and leaves them
+  out of the commit rather than silently dropping a file.
+- Loose files picked individually have no folder, so they raise no question and
+  land directly in the destination.
 
 ## Requirements
 
@@ -79,8 +110,8 @@ Create a token at https://github.com/settings/tokens with the `repo` scope
   The 5,000 requests per hour limit applies, and the app backs off and retries
   when GitHub signals secondary rate limiting.
 - **Existing paths.** Uploading to a path that already exists overwrites that
-  file in the new commit. The app detects collisions up front and asks before
-  overwriting.
+  file in the new commit. The app detects collisions up front and warns before
+  you commit.
 - **Protected branches.** A branch with required reviews or checks rejects a
   direct push. Upload to a new branch and open a pull request instead.
 
@@ -91,6 +122,6 @@ src/app                 routes and pages
 src/app/api/auth        OAuth start and callback, token sign-in, sign-out
 src/app/api/repos       repository, branch, and existing-path lookups
 src/app/api/upload      blob creation and the single-commit writer
-src/components          sign-in, pickers, dropzone, progress UI
-src/lib                 session sealing, GitHub client, upload orchestration
+src/components          sign-in, pickers, dropzone, folder choices, progress
+src/lib                 session sealing, GitHub client, staging, upload client
 ```

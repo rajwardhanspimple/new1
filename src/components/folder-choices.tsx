@@ -20,6 +20,12 @@ function preview(destination: string, segments: string[]): string {
   return `/${parts.join("/")}`;
 }
 
+function headingFor(undecidedCount: number): string {
+  if (undecidedCount === 0) return "Folder handling";
+  if (undecidedCount === 1) return "How should this folder be uploaded?";
+  return "How should these folders be uploaded?";
+}
+
 /**
  * Asks, for every folder the user selected, whether to recreate that folder in
  * the repository or upload only what is inside it. Nothing can be uploaded
@@ -47,11 +53,7 @@ export function FolderChoices({
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-slate-100">
-            {undecided.length > 0
-              ? `How should ${
-                  undecided.length === 1 ? "this folder" : "these folders"
-                } be uploaded?"`.replace('"', "")
-              : "Folder handling"}
+            {headingFor(undecided.length)}
           </h2>
           <p className="mt-1 text-sm text-slate-400">
             Pick whether each selected folder is recreated in the repository, or whether
@@ -89,7 +91,9 @@ export function FolderChoices({
             <li
               key={root}
               className={`rounded-lg border px-3 py-3 ${
-                mode ? "border-slate-800 bg-slate-950/60" : "border-amber-800/70 bg-amber-950/20"
+                mode
+                  ? "border-slate-800 bg-slate-950/60"
+                  : "border-amber-800/70 bg-amber-950/20"
               }`}
             >
               <div className="flex flex-wrap items-center justify-between gap-2">

@@ -28,3 +28,11 @@ export interface PathsResponse {
   paths: string[];
   truncated: boolean;
 }
+
+export interface AccessResponse {
+  canWrite: boolean;
+  /** Why writing is refused, taken from GitHub where possible. */
+  reason: string | null;
+  /** What the user can do about it. */
+  hint: string | null;
+}

@@ -53,10 +53,25 @@ export interface UploadOutcome {
   uploaded: number;
   failed: number;
   skipped: number;
+  /** Set when the run stopped early, for example on a permission error. */
+  stoppedReason: string | null;
 }
 
 const CONCURRENCY = 6;
 const BLOB_RETRIES = 3;
+
+/** Statuses that will never succeed on retry and end the whole run. */
+const FATAL_STATUSES = new Set([401, 403, 404]);
+
+class UploadError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "UploadError";
+    this.status = status;
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -107,10 +122,10 @@ async function uploadBlob(
   const url = `/api/upload/blob?owner=${encodeURIComponent(
     target.owner,
   )}&repo=${encodeURIComponent(target.repo)}`;
-  let lastMessage = "Upload failed.";
+  let lastError = new UploadError(0, "Upload failed.");
 
   for (let attempt = 0; attempt <= BLOB_RETRIES; attempt += 1) {
-    if (signal.aborted) throw new Error("Upload cancelled.");
+    if (signal.aborted) throw new UploadError(0, "Upload cancelled.");
 
     const response = await fetch(url, {
       method: "POST",
@@ -124,19 +139,21 @@ async function uploadBlob(
       return payload.sha;
     }
 
-    lastMessage = await readError(response);
+    lastError = new UploadError(response.status, await readError(response));
+
     const retryable = response.status === 429 || response.status >= 500;
     if (!retryable || attempt === BLOB_RETRIES) break;
     await sleep(600 * 2 ** attempt);
   }
 
-  throw new Error(lastMessage);
+  throw lastError;
 }
 
 /**
  * Uploads every staged file as a blob with bounded concurrency, then requests a
  * single commit containing all of the blobs that succeeded. `resolvePath` maps a
- * staged file onto its final repository path.
+ * staged file onto its final repository path. A permission or auth failure ends
+ * the run immediately rather than repeating for every remaining file.
  */
 export async function runUpload(options: {
   files: StagedFile[];
@@ -149,14 +166,21 @@ export async function runUpload(options: {
   const committable: Array<{ path: string; sha: string }> = [];
   let uploaded = 0;
   let failed = 0;
+  let skipped = 0;
+  let stoppedReason: string | null = null;
 
   const queue = [...files];
   async function worker(): Promise<void> {
     for (;;) {
       const staged = queue.shift();
       if (!staged) return;
-      if (signal.aborted) {
-        onProgress(staged.id, { status: "skipped", error: "Cancelled." });
+
+      if (signal.aborted || stoppedReason) {
+        skipped += 1;
+        onProgress(staged.id, {
+          status: "skipped",
+          error: stoppedReason ? "Stopped after an earlier error." : "Cancelled.",
+        });
         continue;
       }
 
@@ -168,10 +192,12 @@ export async function runUpload(options: {
         onProgress(staged.id, { status: "uploaded", sha });
       } catch (error) {
         failed += 1;
-        onProgress(staged.id, {
-          status: "failed",
-          error: error instanceof Error ? error.message : "Upload failed.",
-        });
+        const message = error instanceof Error ? error.message : "Upload failed.";
+        onProgress(staged.id, { status: "failed", error: message });
+
+        if (error instanceof UploadError && FATAL_STATUSES.has(error.status)) {
+          stoppedReason = message;
+        }
       }
     }
   }
@@ -180,8 +206,8 @@ export async function runUpload(options: {
     Array.from({ length: Math.min(CONCURRENCY, Math.max(files.length, 1)) }, worker),
   );
 
-  if (committable.length === 0 || signal.aborted) {
-    return { commit: null, uploaded, failed, skipped: queue.length };
+  if (stoppedReason || committable.length === 0 || signal.aborted) {
+    return { commit: null, uploaded, failed, skipped, stoppedReason };
   }
 
   const response = await fetch("/api/upload/commit", {
@@ -205,6 +231,7 @@ export async function runUpload(options: {
     commit: (await response.json()) as CommitResult,
     uploaded,
     failed,
-    skipped: 0,
+    skipped,
+    stoppedReason: null,
   };
 }

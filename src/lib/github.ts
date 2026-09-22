@@ -26,8 +26,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isRetryable(status: number): boolean {
-  return status === 403 || status === 429 || status >= 500;
+/**
+ * GitHub answers 403 both for rate limiting and for "your token may not do
+ * this". Only the first kind is worth retrying, so the headers and message are
+ * checked for a rate-limit signal before any waiting happens.
+ */
+function isRateLimited(response: Response, message: string): boolean {
+  if (response.headers.get("retry-after")) return true;
+  if (response.headers.get("x-ratelimit-remaining") === "0") return true;
+  return /rate limit|secondary rate|abuse detection|try again later/i.test(message);
+}
+
+function isRetryable(status: number, response: Response, message: string): boolean {
+  if (status >= 500) return true;
+  if (status === 429) return true;
+  if (status === 403) return isRateLimited(response, message);
+  return false;
 }
 
 /** Milliseconds to wait before retrying, honouring GitHub's rate limit hints. */
@@ -71,7 +85,7 @@ async function errorMessage(response: Response): Promise<string> {
   }
 }
 
-/** Calls the GitHub REST API with retries on rate limits and server errors. */
+/** Calls the GitHub REST API, retrying only genuinely transient failures. */
 export async function githubRequest<T>(
   path: string,
   options: GitHubRequestOptions,
@@ -111,14 +125,15 @@ export async function githubRequest<T>(
       return (await response.json()) as T;
     }
 
-    if (isRetryable(response.status) && attempt < retries) {
-      const wait = backoffMs(response, attempt);
-      lastError = new GitHubApiError(response.status, await errorMessage(response));
-      await sleep(wait);
+    const message = await errorMessage(response);
+
+    if (attempt < retries && isRetryable(response.status, response, message)) {
+      lastError = new GitHubApiError(response.status, message);
+      await sleep(backoffMs(response, attempt));
       continue;
     }
 
-    throw new GitHubApiError(response.status, await errorMessage(response));
+    throw new GitHubApiError(response.status, message);
   }
 
   throw lastError ?? new GitHubApiError(500, "GitHub request failed");

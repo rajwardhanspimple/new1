@@ -7,7 +7,7 @@ import { FileList } from "@/components/file-list";
 import { FolderChoices } from "@/components/folder-choices";
 import { SignInPanel } from "@/components/sign-in-panel";
 import { countInFolder, dedupeByPath, folderRootsOf } from "@/lib/file-staging";
-import type { PathsResponse } from "@/lib/types";
+import type { AccessResponse, PathsResponse } from "@/lib/types";
 import type { SessionView } from "@/lib/session";
 import {
   runUpload,
@@ -32,6 +32,7 @@ export function Uploader({ initialError }: { initialError?: string }) {
   const [maxFileBytes, setMaxFileBytes] = useState(4 * 1024 * 1024);
 
   const [destination, setDestination] = useState<Destination | null>(null);
+  const [access, setAccess] = useState<AccessResponse | null>(null);
   const [files, setFiles] = useState<StagedFile[]>([]);
   const [folderModes, setFolderModes] = useState<Record<string, FolderMode>>({});
   const [progress, setProgress] = useState<Record<string, FileProgress>>({});
@@ -109,8 +110,7 @@ export function Uploader({ initialError }: { initialError?: string }) {
   );
 
   const pathOf = useCallback(
-    (file: StagedFile) =>
-      targetPath(destinationFolder, stagedPath(file, folderModes)),
+    (file: StagedFile) => targetPath(destinationFolder, stagedPath(file, folderModes)),
     [destinationFolder, folderModes],
   );
 
@@ -139,8 +139,7 @@ export function Uploader({ initialError }: { initialError?: string }) {
   }, [files, oversizedIds, pathOf]);
 
   const uploadable = useMemo(
-    () =>
-      files.filter((file) => !oversizedIds.has(file.id) && !duplicateIds.has(file.id)),
+    () => files.filter((file) => !oversizedIds.has(file.id) && !duplicateIds.has(file.id)),
     [files, oversizedIds, duplicateIds],
   );
 
@@ -151,6 +150,10 @@ export function Uploader({ initialError }: { initialError?: string }) {
 
   const handleDestination = useCallback((next: Destination | null) => {
     setDestination(next);
+  }, []);
+
+  const handleAccess = useCallback((next: AccessResponse | null) => {
+    setAccess(next);
   }, []);
 
   function setFolderMode(folder: string, mode: FolderMode) {
@@ -171,12 +174,14 @@ export function Uploader({ initialError }: { initialError?: string }) {
     await fetch("/api/auth/signout", { method: "POST" });
     setSession(null);
     setDestination(null);
+    setAccess(null);
     setResult(null);
     clearFiles();
   }
 
   async function startUpload() {
     if (!destination || uploadable.length === 0 || undecidedFolders.length > 0) return;
+    if (access && !access.canWrite) return;
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -215,7 +220,10 @@ export function Uploader({ initialError }: { initialError?: string }) {
           return next;
         });
       }
-      if (outcome.failed > 0) {
+
+      if (outcome.stoppedReason) {
+        setError(`Upload stopped. ${outcome.stoppedReason}`);
+      } else if (outcome.failed > 0) {
         setError(
           `${outcome.failed} file${outcome.failed === 1 ? "" : "s"} could not be uploaded${
             outcome.commit ? " and were left out of the commit" : ""
@@ -235,6 +243,7 @@ export function Uploader({ initialError }: { initialError?: string }) {
   }
 
   const blockedByFolders = undecidedFolders.length > 0;
+  const blockedByAccess = Boolean(access && !access.canWrite);
 
   return (
     <div className="space-y-6">
@@ -277,7 +286,11 @@ export function Uploader({ initialError }: { initialError?: string }) {
         <SignInPanel oauthAvailable={oauthAvailable} onSignedIn={setSession} />
       ) : (
         <>
-          <DestinationPicker onChange={handleDestination} onError={setError} />
+          <DestinationPicker
+            onChange={handleDestination}
+            onError={setError}
+            onAccessChange={handleAccess}
+          />
           <FileDropzone disabled={busy} onAdd={addFiles} />
           <FolderChoices
             roots={folderRoots}
@@ -322,7 +335,11 @@ export function Uploader({ initialError }: { initialError?: string }) {
                 className="btn-primary"
                 onClick={startUpload}
                 disabled={
-                  busy || !destination || uploadable.length === 0 || blockedByFolders
+                  busy ||
+                  !destination ||
+                  uploadable.length === 0 ||
+                  blockedByFolders ||
+                  blockedByAccess
                 }
               >
                 {busy
@@ -340,7 +357,11 @@ export function Uploader({ initialError }: { initialError?: string }) {
                   Cancel
                 </button>
               ) : null}
-              {blockedByFolders ? (
+              {blockedByAccess ? (
+                <p className="text-xs text-rose-300">
+                  Fix the token permission above to continue.
+                </p>
+              ) : blockedByFolders ? (
                 <p className="text-xs text-amber-300">
                   Answer the folder question above to continue.
                 </p>

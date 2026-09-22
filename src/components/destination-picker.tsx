@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type {
+  AccessResponse,
   BranchesResponse,
   BranchSummary,
   ReposResponse,
@@ -19,9 +20,15 @@ export interface Destination {
 interface DestinationPickerProps {
   onChange: (destination: Destination | null) => void;
   onError: (message: string | null) => void;
+  /** Reports whether the token may write to the chosen repository. */
+  onAccessChange: (access: AccessResponse | null) => void;
 }
 
-export function DestinationPicker({ onChange, onError }: DestinationPickerProps) {
+export function DestinationPicker({
+  onChange,
+  onError,
+  onAccessChange,
+}: DestinationPickerProps) {
   const [repos, setRepos] = useState<RepoSummary[]>([]);
   const [loadingRepos, setLoadingRepos] = useState(true);
   const [search, setSearch] = useState("");
@@ -32,6 +39,9 @@ export function DestinationPicker({ onChange, onError }: DestinationPickerProps)
   const [branch, setBranch] = useState("");
   const [newBranchMode, setNewBranchMode] = useState(false);
   const [folder, setFolder] = useState("");
+
+  const [access, setAccess] = useState<AccessResponse | null>(null);
+  const [checkingAccess, setCheckingAccess] = useState(false);
 
   const selectedRepo = useMemo(
     () => repos.find((repo) => repo.fullName === selectedFullName) ?? null,
@@ -105,6 +115,44 @@ export function DestinationPicker({ onChange, onError }: DestinationPickerProps)
       cancelled = true;
     };
   }, [selectedRepo, onError]);
+
+  /** Confirms write access once per repository, before any file is sent. */
+  useEffect(() => {
+    if (!selectedRepo) {
+      setAccess(null);
+      onAccessChange(null);
+      return;
+    }
+
+    let cancelled = false;
+    setCheckingAccess(true);
+    setAccess(null);
+    onAccessChange(null);
+
+    async function check(repoOwner: string, repoName: string) {
+      try {
+        const response = await fetch(
+          `/api/repos/${encodeURIComponent(repoOwner)}/${encodeURIComponent(
+            repoName,
+          )}/access`,
+        );
+        if (!response.ok) return;
+        const payload = (await response.json()) as AccessResponse;
+        if (cancelled) return;
+        setAccess(payload);
+        onAccessChange(payload);
+      } catch {
+        // A failed check must not block an upload that would otherwise work.
+      } finally {
+        if (!cancelled) setCheckingAccess(false);
+      }
+    }
+
+    void check(selectedRepo.owner, selectedRepo.name);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRepo, onAccessChange]);
 
   useEffect(() => {
     if (!selectedRepo || !branch.trim()) {
@@ -247,6 +295,24 @@ export function DestinationPicker({ onChange, onError }: DestinationPickerProps)
           </div>
         </div>
       </div>
+
+      {checkingAccess ? (
+        <p className="mt-4 text-xs text-slate-500">Checking write access...</p>
+      ) : null}
+
+      {access && !access.canWrite ? (
+        <div className="mt-4 rounded-lg border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-200">
+          <p className="font-medium">Cannot write to this repository</p>
+          <p className="mt-1 text-xs">{access.reason}</p>
+          {access.hint ? <p className="mt-1 text-xs text-rose-300">{access.hint}</p> : null}
+        </div>
+      ) : null}
+
+      {access?.canWrite && selectedRepo ? (
+        <p className="mt-4 text-xs text-emerald-300">
+          Write access to {selectedRepo.fullName} confirmed.
+        </p>
+      ) : null}
     </section>
   );
 }

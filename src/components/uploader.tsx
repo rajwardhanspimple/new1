@@ -6,6 +6,7 @@ import { FileDropzone } from "@/components/file-dropzone";
 import { FileList } from "@/components/file-list";
 import { SignInPanel } from "@/components/sign-in-panel";
 import { dedupeByPath } from "@/lib/file-staging";
+import type { PathsResponse } from "@/lib/types";
 import type { SessionView } from "@/lib/session";
 import {
   runUpload,
@@ -54,37 +55,37 @@ export function Uploader({ initialError }: { initialError?: string }) {
     void load();
   }, []);
 
-  const repoKey = destination
-    ? `${destination.repo.fullName}@${destination.branch}`
-    : null;
+  const owner = destination?.repo.owner ?? null;
+  const repoName = destination?.repo.name ?? null;
+  const branchName = destination?.branch ?? null;
+  const isNewBranch = Boolean(destination?.baseBranch);
 
   useEffect(() => {
-    if (!destination || destination.baseBranch) {
+    if (!owner || !repoName || !branchName || isNewBranch) {
       setExistingPaths(new Set());
       return;
     }
 
     let cancelled = false;
-    async function load(owner: string, repo: string, branch: string) {
+    async function load() {
       try {
         const response = await fetch(
-          `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
-            repo,
-          )}/paths?branch=${encodeURIComponent(branch)}`,
+          `/api/repos/${encodeURIComponent(owner as string)}/${encodeURIComponent(
+            repoName as string,
+          )}/paths?branch=${encodeURIComponent(branchName as string)}`,
         );
         if (!response.ok) return;
-        const payload = (await response.json()) as { paths: string[] };
+        const payload = (await response.json()) as PathsResponse;
         if (!cancelled) setExistingPaths(new Set(payload.paths));
       } catch {
-        // Collision hints are advisory; ignore lookup failures.
+        // Collision hints are advisory, so lookup failures are ignored.
       }
     }
-    void load(destination.repo.owner, destination.repo.name, destination.branch);
+    void load();
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repoKey]);
+  }, [owner, repoName, branchName, isNewBranch]);
 
   const oversizedIds = useMemo(() => {
     const ids = new Set<string>();

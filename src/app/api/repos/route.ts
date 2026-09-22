@@ -1,5 +1,6 @@
 import { requireSession, toErrorResponse } from "@/lib/api";
 import { githubPaginate } from "@/lib/github";
+import type { RepoSummary } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,15 +14,6 @@ interface RepoPayload {
   default_branch: string;
   pushed_at: string | null;
   permissions?: { push?: boolean; admin?: boolean };
-}
-
-export interface RepoSummary {
-  fullName: string;
-  name: string;
-  owner: string;
-  isPrivate: boolean;
-  defaultBranch: string;
-  pushedAt: string | null;
 }
 
 /** Lists every repository the signed-in user can push to, newest push first. */

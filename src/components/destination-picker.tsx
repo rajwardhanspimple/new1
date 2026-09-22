@@ -1,8 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { RepoSummary } from "@/app/api/repos/route";
-import type { BranchSummary } from "@/app/api/repos/[owner]/[repo]/branches/route";
+import type {
+  BranchesResponse,
+  BranchSummary,
+  ReposResponse,
+  RepoSummary,
+} from "@/lib/types";
 
 export interface Destination {
   repo: RepoSummary;
@@ -39,8 +43,7 @@ export function DestinationPicker({ onChange, onError }: DestinationPickerProps)
     async function load() {
       try {
         const response = await fetch("/api/repos");
-        const payload = (await response.json()) as {
-          repositories?: RepoSummary[];
+        const payload = (await response.json()) as Partial<ReposResponse> & {
           error?: string;
         };
         if (!response.ok || !payload.repositories) {
@@ -79,8 +82,7 @@ export function DestinationPicker({ onChange, onError }: DestinationPickerProps)
             repoName,
           )}/branches`,
         );
-        const payload = (await response.json()) as {
-          branches?: BranchSummary[];
+        const payload = (await response.json()) as Partial<BranchesResponse> & {
           error?: string;
         };
         if (!response.ok || !payload.branches) {

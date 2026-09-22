@@ -1,5 +1,6 @@
 import { requireSession, toErrorResponse } from "@/lib/api";
 import { githubPaginate, githubRequest } from "@/lib/github";
+import type { BranchSummary } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,12 +12,6 @@ interface BranchPayload {
 
 interface RepoPayload {
   default_branch: string;
-}
-
-export interface BranchSummary {
-  name: string;
-  isProtected: boolean;
-  isDefault: boolean;
 }
 
 /** Lists the branches of one repository, marking the default and protected ones. */

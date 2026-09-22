@@ -2,14 +2,16 @@
 
 import { formatBytes } from "@/lib/file-staging";
 import type { FileProgress, StagedFile } from "@/lib/upload-client";
-import { targetPath } from "@/lib/upload-client";
 
 interface FileListProps {
   files: StagedFile[];
   progress: Record<string, FileProgress>;
-  destinationFolder: string;
+  /** Maps a staged file onto its final repository path. */
+  pathOf: (file: StagedFile) => string;
   existingPaths: Set<string>;
   oversizedIds: Set<string>;
+  /** Files whose final path repeats an earlier file's path. */
+  duplicateIds: Set<string>;
   maxFileBytes: number;
   busy: boolean;
   onRemove: (id: string) => void;
@@ -35,9 +37,10 @@ const STATUS_LABELS: Record<string, string> = {
 export function FileList({
   files,
   progress,
-  destinationFolder,
+  pathOf,
   existingPaths,
   oversizedIds,
+  duplicateIds,
   maxFileBytes,
   busy,
   onRemove,
@@ -46,9 +49,7 @@ export function FileList({
   if (files.length === 0) return null;
 
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-  const overwrites = files.filter((file) =>
-    existingPaths.has(targetPath(destinationFolder, file.relativePath)),
-  );
+  const overwrites = files.filter((file) => existingPaths.has(pathOf(file)));
 
   return (
     <section className="panel">
@@ -71,6 +72,14 @@ export function FileList({
         </p>
       ) : null}
 
+      {duplicateIds.size > 0 ? (
+        <p className="mt-3 rounded-lg border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-xs text-rose-200">
+          {duplicateIds.size} file{duplicateIds.size === 1 ? "" : "s"} would land on a path
+          already used by another staged file and will be skipped. Keeping a folder instead
+          of using its contents usually resolves this.
+        </p>
+      ) : null}
+
       {overwrites.length > 0 ? (
         <p className="mt-3 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
           {overwrites.length} path{overwrites.length === 1 ? "" : "s"} already exist on this
@@ -82,7 +91,9 @@ export function FileList({
         {files.map((file) => {
           const state = progress[file.id]?.status ?? "pending";
           const oversized = oversizedIds.has(file.id);
-          const path = targetPath(destinationFolder, file.relativePath);
+          const duplicate = duplicateIds.has(file.id);
+          const path = pathOf(file);
+          const blocked = oversized || duplicate;
           return (
             <li key={file.id} className="flex items-center gap-3 px-3 py-2 text-sm">
               <div className="min-w-0 flex-1">
@@ -95,10 +106,10 @@ export function FileList({
               </div>
               <span
                 className={`shrink-0 text-xs ${
-                  oversized ? STATUS_STYLES.failed : STATUS_STYLES[state]
+                  blocked ? STATUS_STYLES.failed : STATUS_STYLES[state]
                 }`}
               >
-                {oversized ? "Too large" : STATUS_LABELS[state]}
+                {oversized ? "Too large" : duplicate ? "Duplicate path" : STATUS_LABELS[state]}
               </span>
               <button
                 type="button"

@@ -7,12 +7,22 @@ export type UploadStatus =
   | "failed"
   | "skipped";
 
+/**
+ * What to do with a selected folder.
+ *
+ * - `directory` recreates the folder inside the repository.
+ * - `contents` uploads what is inside it and drops the folder name.
+ */
+export type FolderMode = "directory" | "contents";
+
 export interface StagedFile {
   /** Stable key for React lists and progress updates. */
   id: string;
   file: File;
-  /** Path relative to the drop root, folders included. */
+  /** Path exactly as picked, top folder included. */
   relativePath: string;
+  /** First segment of relativePath, or null for a loose file. */
+  rootFolder: string | null;
   size: number;
 }
 
@@ -27,8 +37,6 @@ export interface UploadTarget {
   repo: string;
   branch: string;
   baseBranch?: string;
-  /** Optional folder prefix applied to every uploaded path. */
-  destination: string;
   message: string;
 }
 
@@ -63,11 +71,23 @@ export function normalizeSegment(value: string): string {
     .join("/");
 }
 
-/** Final repository path for a staged file, including the destination prefix. */
-export function targetPath(destination: string, relativePath: string): string {
+/** Path within the destination, after the folder choice is applied. */
+export function stagedPath(
+  file: StagedFile,
+  folderModes: Record<string, FolderMode>,
+): string {
+  if (!file.rootFolder || folderModes[file.rootFolder] !== "contents") {
+    return file.relativePath;
+  }
+  const segments = file.relativePath.split("/");
+  return segments.length > 1 ? segments.slice(1).join("/") : file.relativePath;
+}
+
+/** Final repository path, including the destination folder prefix. */
+export function targetPath(destination: string, path: string): string {
   const prefix = normalizeSegment(destination);
-  const path = normalizeSegment(relativePath);
-  return prefix ? `${prefix}/${path}` : path;
+  const suffix = normalizeSegment(path);
+  return prefix ? `${prefix}/${suffix}` : suffix;
 }
 
 async function readError(response: Response): Promise<string> {
@@ -115,15 +135,17 @@ async function uploadBlob(
 
 /**
  * Uploads every staged file as a blob with bounded concurrency, then requests a
- * single commit containing all of the blobs that succeeded.
+ * single commit containing all of the blobs that succeeded. `resolvePath` maps a
+ * staged file onto its final repository path.
  */
 export async function runUpload(options: {
   files: StagedFile[];
   target: UploadTarget;
+  resolvePath: (file: StagedFile) => string;
   signal: AbortSignal;
   onProgress: (id: string, progress: FileProgress) => void;
 }): Promise<UploadOutcome> {
-  const { files, target, signal, onProgress } = options;
+  const { files, target, resolvePath, signal, onProgress } = options;
   const committable: Array<{ path: string; sha: string }> = [];
   let uploaded = 0;
   let failed = 0;
@@ -141,10 +163,7 @@ export async function runUpload(options: {
       onProgress(staged.id, { status: "uploading" });
       try {
         const sha = await uploadBlob(staged, target, signal);
-        committable.push({
-          path: targetPath(target.destination, staged.relativePath),
-          sha,
-        });
+        committable.push({ path: resolvePath(staged), sha });
         uploaded += 1;
         onProgress(staged.id, { status: "uploaded", sha });
       } catch (error) {

@@ -10,25 +10,42 @@ function nextId(): string {
   return `f${counter}`;
 }
 
-/** Path GitHub cannot store, or noise we never want to upload. */
-const IGNORED = [/(^|\/)\.git\//, /(^|\/)\.DS_Store$/, /(^|\/)node_modules\//, /(^|\/)Thumbs\.db$/];
+/** Paths GitHub cannot store, or noise we never want to upload. */
+const IGNORED = [
+  /(^|\/)\.git\//,
+  /(^|\/)\.DS_Store$/,
+  /(^|\/)node_modules\//,
+  /(^|\/)Thumbs\.db$/,
+];
 
 function isIgnored(path: string): boolean {
   return IGNORED.some((pattern) => pattern.test(path));
 }
 
-function relativePathOf(file: File): string {
-  const withPath = file as File & { webkitRelativePath?: string };
-  const candidate = withPath.webkitRelativePath || file.name;
-  return normalizeSegment(candidate);
+/** Top-level folder a file came from, or null when it was picked on its own. */
+function rootFolderOf(relativePath: string): string | null {
+  const segments = relativePath.split("/");
+  return segments.length > 1 ? (segments[0] as string) : null;
+}
+
+function stage(file: File, rawPath: string): StagedFile | null {
+  const relativePath = normalizeSegment(rawPath);
+  if (!relativePath || isIgnored(relativePath)) return null;
+  return {
+    id: nextId(),
+    file,
+    relativePath,
+    rootFolder: rootFolderOf(relativePath),
+    size: file.size,
+  };
 }
 
 export function stageFiles(files: Iterable<File>): StagedFile[] {
   const staged: StagedFile[] = [];
   for (const file of files) {
-    const relativePath = relativePathOf(file);
-    if (!relativePath || isIgnored(relativePath)) continue;
-    staged.push({ id: nextId(), file, relativePath, size: file.size });
+    const withPath = file as File & { webkitRelativePath?: string };
+    const entry = stage(file, withPath.webkitRelativePath || file.name);
+    if (entry) staged.push(entry);
   }
   return staged;
 }
@@ -81,9 +98,8 @@ async function walkEntry(entry: FileSystemEntryLike, staged: StagedFile[]): Prom
   if (entry.isFile) {
     const file = await readEntryFile(entry);
     if (!file) return;
-    const relativePath = normalizeSegment(entry.fullPath || file.name);
-    if (!relativePath || isIgnored(relativePath)) return;
-    staged.push({ id: nextId(), file, relativePath, size: file.size });
+    const result = stage(file, entry.fullPath || file.name);
+    if (result) staged.push(result);
     return;
   }
 
@@ -121,7 +137,7 @@ export async function stageDataTransfer(transfer: DataTransfer): Promise<StagedF
   return staged;
 }
 
-/** Removes entries whose final repository path repeats an earlier one. */
+/** Removes entries whose picked path repeats an earlier one. */
 export function dedupeByPath(files: StagedFile[]): StagedFile[] {
   const seen = new Set<string>();
   return files.filter((file) => {
@@ -129,6 +145,22 @@ export function dedupeByPath(files: StagedFile[]): StagedFile[] {
     seen.add(file.relativePath);
     return true;
   });
+}
+
+/** Distinct top-level folders across the staged files, in the order added. */
+export function folderRootsOf(files: StagedFile[]): string[] {
+  const roots: string[] = [];
+  for (const file of files) {
+    if (file.rootFolder && !roots.includes(file.rootFolder)) {
+      roots.push(file.rootFolder);
+    }
+  }
+  return roots;
+}
+
+/** How many staged files came from a given top-level folder. */
+export function countInFolder(files: StagedFile[], root: string): number {
+  return files.reduce((total, file) => (file.rootFolder === root ? total + 1 : total), 0);
 }
 
 export function formatBytes(bytes: number): string {

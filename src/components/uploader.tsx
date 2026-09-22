@@ -4,15 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DestinationPicker, type Destination } from "@/components/destination-picker";
 import { FileDropzone } from "@/components/file-dropzone";
 import { FileList } from "@/components/file-list";
+import { FolderChoices } from "@/components/folder-choices";
 import { SignInPanel } from "@/components/sign-in-panel";
-import { dedupeByPath } from "@/lib/file-staging";
+import { countInFolder, dedupeByPath, folderRootsOf } from "@/lib/file-staging";
 import type { PathsResponse } from "@/lib/types";
 import type { SessionView } from "@/lib/session";
 import {
   runUpload,
+  stagedPath,
   targetPath,
   type CommitResult,
   type FileProgress,
+  type FolderMode,
   type StagedFile,
 } from "@/lib/upload-client";
 
@@ -30,6 +33,7 @@ export function Uploader({ initialError }: { initialError?: string }) {
 
   const [destination, setDestination] = useState<Destination | null>(null);
   const [files, setFiles] = useState<StagedFile[]>([]);
+  const [folderModes, setFolderModes] = useState<Record<string, FolderMode>>({});
   const [progress, setProgress] = useState<Record<string, FileProgress>>({});
   const [existingPaths, setExistingPaths] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState("");
@@ -59,6 +63,7 @@ export function Uploader({ initialError }: { initialError?: string }) {
   const repoName = destination?.repo.name ?? null;
   const branchName = destination?.branch ?? null;
   const isNewBranch = Boolean(destination?.baseBranch);
+  const destinationFolder = destination?.folder ?? "";
 
   useEffect(() => {
     if (!owner || !repoName || !branchName || isNewBranch) {
@@ -87,6 +92,28 @@ export function Uploader({ initialError }: { initialError?: string }) {
     };
   }, [owner, repoName, branchName, isNewBranch]);
 
+  const folderRoots = useMemo(() => folderRootsOf(files), [files]);
+
+  const folderCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const root of folderRoots) {
+      counts[root] = countInFolder(files, root);
+    }
+    return counts;
+  }, [files, folderRoots]);
+
+  /** Folders the user has not answered for yet. Uploading waits on these. */
+  const undecidedFolders = useMemo(
+    () => folderRoots.filter((root) => !folderModes[root]),
+    [folderRoots, folderModes],
+  );
+
+  const pathOf = useCallback(
+    (file: StagedFile) =>
+      targetPath(destinationFolder, stagedPath(file, folderModes)),
+    [destinationFolder, folderModes],
+  );
+
   const oversizedIds = useMemo(() => {
     const ids = new Set<string>();
     for (const file of files) {
@@ -95,9 +122,26 @@ export function Uploader({ initialError }: { initialError?: string }) {
     return ids;
   }, [files, maxFileBytes]);
 
+  /**
+   * Two folders can collapse onto the same path once their contents are used
+   * without the folder name, so later collisions are held back.
+   */
+  const duplicateIds = useMemo(() => {
+    const ids = new Set<string>();
+    const seen = new Set<string>();
+    for (const file of files) {
+      if (oversizedIds.has(file.id)) continue;
+      const path = pathOf(file);
+      if (seen.has(path)) ids.add(file.id);
+      else seen.add(path);
+    }
+    return ids;
+  }, [files, oversizedIds, pathOf]);
+
   const uploadable = useMemo(
-    () => files.filter((file) => !oversizedIds.has(file.id)),
-    [files, oversizedIds],
+    () =>
+      files.filter((file) => !oversizedIds.has(file.id) && !duplicateIds.has(file.id)),
+    [files, oversizedIds, duplicateIds],
   );
 
   const addFiles = useCallback((incoming: StagedFile[]) => {
@@ -109,17 +153,30 @@ export function Uploader({ initialError }: { initialError?: string }) {
     setDestination(next);
   }, []);
 
+  function setFolderMode(folder: string, mode: FolderMode) {
+    setFolderModes((current) => ({ ...current, [folder]: mode }));
+  }
+
+  function applyFolderModeToAll(mode: FolderMode) {
+    setFolderModes(Object.fromEntries(folderRoots.map((root) => [root, mode])));
+  }
+
+  function clearFiles() {
+    setFiles([]);
+    setFolderModes({});
+    setProgress({});
+  }
+
   async function signOut() {
     await fetch("/api/auth/signout", { method: "POST" });
     setSession(null);
-    setFiles([]);
-    setProgress({});
     setDestination(null);
     setResult(null);
+    clearFiles();
   }
 
   async function startUpload() {
-    if (!destination || uploadable.length === 0) return;
+    if (!destination || uploadable.length === 0 || undecidedFolders.length > 0) return;
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -140,11 +197,11 @@ export function Uploader({ initialError }: { initialError?: string }) {
           repo: destination.repo.name,
           branch: destination.branch,
           baseBranch: destination.baseBranch,
-          destination: destination.folder,
           message:
             message.trim() ||
             `Upload ${uploadable.length} file${uploadable.length === 1 ? "" : "s"}`,
         },
+        resolvePath: pathOf,
         signal: controller.signal,
         onProgress: (id, update) =>
           setProgress((current) => ({ ...current, [id]: update })),
@@ -154,9 +211,7 @@ export function Uploader({ initialError }: { initialError?: string }) {
         setResult(outcome.commit);
         setExistingPaths((current) => {
           const next = new Set(current);
-          for (const file of uploadable) {
-            next.add(targetPath(destination.folder, file.relativePath));
-          }
+          for (const file of uploadable) next.add(pathOf(file));
           return next;
         });
       }
@@ -178,6 +233,8 @@ export function Uploader({ initialError }: { initialError?: string }) {
   if (loading) {
     return <p className="text-sm text-slate-400">Loading...</p>;
   }
+
+  const blockedByFolders = undecidedFolders.length > 0;
 
   return (
     <div className="space-y-6">
@@ -222,21 +279,28 @@ export function Uploader({ initialError }: { initialError?: string }) {
         <>
           <DestinationPicker onChange={handleDestination} onError={setError} />
           <FileDropzone disabled={busy} onAdd={addFiles} />
+          <FolderChoices
+            roots={folderRoots}
+            modes={folderModes}
+            counts={folderCounts}
+            destination={destinationFolder}
+            disabled={busy}
+            onChange={setFolderMode}
+            onApplyAll={applyFolderModeToAll}
+          />
           <FileList
             files={files}
             progress={progress}
-            destinationFolder={destination?.folder ?? ""}
+            pathOf={pathOf}
             existingPaths={existingPaths}
             oversizedIds={oversizedIds}
+            duplicateIds={duplicateIds}
             maxFileBytes={maxFileBytes}
             busy={busy}
             onRemove={(id) =>
               setFiles((current) => current.filter((file) => file.id !== id))
             }
-            onClear={() => {
-              setFiles([]);
-              setProgress({});
-            }}
+            onClear={clearFiles}
           />
 
           <section className="panel">
@@ -257,7 +321,9 @@ export function Uploader({ initialError }: { initialError?: string }) {
                 type="button"
                 className="btn-primary"
                 onClick={startUpload}
-                disabled={busy || !destination || uploadable.length === 0}
+                disabled={
+                  busy || !destination || uploadable.length === 0 || blockedByFolders
+                }
               >
                 {busy
                   ? "Uploading..."
@@ -274,7 +340,11 @@ export function Uploader({ initialError }: { initialError?: string }) {
                   Cancel
                 </button>
               ) : null}
-              {destination ? (
+              {blockedByFolders ? (
+                <p className="text-xs text-amber-300">
+                  Answer the folder question above to continue.
+                </p>
+              ) : destination ? (
                 <p className="text-xs text-slate-500">
                   Target: {destination.repo.fullName} @ {destination.branch}
                   {destination.baseBranch ? " (new branch)" : ""}
